@@ -1,4 +1,3 @@
-# Solar-Energy-CAPEX-Engine
 import io
 import math
 
@@ -94,24 +93,32 @@ tx_rate = tx_kva * 42.0
 supply = tx_qty * tx_rate + sw_rate + length * runs * rate
 labour = max(5000.0, 0.12 * supply)
 protection = 7500.0 if is_lv else 14000.0
+aux_cost = 0.0 if is_lv else 3500.0
 earthing, testing = 4500.0, 9500.0
-prelims = max(6000.0, 0.06 * (supply + length * trench_rate + labour + protection + earthing + testing))
+prelims = max(6000.0, 0.06 * (supply + length * trench_rate + labour + protection + aux_cost + earthing + testing))
 
 # ============================== WARNINGS =====================================
 if is_lv and (runs > 2 or kw > 1000):
     st.warning("Load is high for a 415 V connection. Check whether an MV connection is more realistic.")
 if need_a > RATINGS[-1]:
     st.warning(f"Required switchgear current ({need_a:,.0f} A) exceeds the largest standard rating listed.")
-if n_tx > 1:
+if n_tx > 1 and include_tx:
     st.info(f"Load exceeds the largest single transformer: using {n_tx} × {tx_kva} kVA units.")
 
 # ============================== BOQ ==========================================
+sig = (V, kw, ground)
+if st.session_state.get("boq_sig") != sig:
+    st.session_state.pop("boq_editor", None)
+    st.session_state["boq_sig"] = sig
+
 rows = [
     ("21.1.1", f"Step-Up Transformer ({tx_kva} kVA, Oil-Immersed)" + ("" if include_tx else " (excluded)"), float(tx_qty), "nr", tx_rate),
     ("21.2.4", f"{sw_name}, {rating} A, {fault_ka:g} kA assumed fault level", 1.0, "nr", float(sw_rate)),
     ("21.5.2", f"Interconnection Cabling: {cable_desc}", float(length * runs), "m", float(rate)),
     ("14.2.1", f"Civils: trench, bedding, backfill, warning tape ({ground})", float(length), "m", trench_rate),
     ("21.6.1", "Protection Relays & Revenue Metering", 1.0, "item", protection),
+    ("21.6.3", "Substation Auxiliary DC Tripping Supply & Battery Charger" + (" (n/a at LV)" if is_lv else ""),
+     0.0 if is_lv else 1.0, "item", 3500.0),
     ("21.7.1", "Earthing System & Bonding", 1.0, "item", earthing),
     ("21.9.3", "M&E Installation Labour (rigging, termination, glanding)", 1.0, "item", float(labour)),
     ("21.9.8", "Protection Testing, Relay Calibration & Commissioning", 1.0, "item", testing),
@@ -120,7 +127,7 @@ rows = [
 df = pd.DataFrame(rows, columns=["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"])
 
 st.subheader("⚙️ Editable Quantities & Unit Rates")
-st.caption("Edit Qty or Unit Rate. Edits persist while you change inputs; use the sidebar button to reset. "
+st.caption("Edit Qty or Unit Rate. Edits reset when load, voltage or trenching condition changes; use the sidebar button to reset manually. "
            "Reference numbers are NRM2-style and not verified against the published rules.")
 edited = st.data_editor(
     df, key="boq_editor", hide_index=True, use_container_width=True,
@@ -161,19 +168,23 @@ def build_excel(df_boq, inputs, cont_pct, acc):
     for i, r in enumerate(df_boq.itertuples(index=False), start=2):
         ws.append([r[0], r[1], r[2], r[3], r[4], f"=C{i}*E{i}"])
     last = len(df_boq) + 1
-    s, c, g = last + 2, last + 3, last + 4
+    s = last + 2
+    pc, ca, g, pa, lo, hi = s + 1, s + 2, s + 3, s + 4, s + 5, s + 6
     ws[f"E{s}"], ws[f"F{s}"] = "Subtotal", f"=SUM(F2:F{last})"
-    ws[f"E{c}"], ws[f"F{c}"] = f"Contingency ({cont_pct:.0%})", f"=F{s}*{cont_pct}"
-    ws[f"E{g}"], ws[f"F{g}"] = "GRAND TOTAL", f"=F{s}+F{c}"
-    ws[f"E{g+1}"], ws[f"F{g+1}"] = f"Low (-{acc:.0%})", f"=F{g}*(1-{acc})"
-    ws[f"E{g+2}"], ws[f"F{g+2}"] = f"High (+{acc:.0%})", f"=F{g}*(1+{acc})"
-    for row in (s, c, g, g + 1, g + 2):
-        ws[f"E{row}"].font = Font(bold=True)
-        ws[f"F{row}"].font = Font(bold=True)
-    for row in range(2, g + 3):
+    ws[f"E{pc}"], ws[f"F{pc}"] = "Contingency % (editable)", cont_pct
+    ws[f"E{ca}"], ws[f"F{ca}"] = "Contingency amount", f"=F{s}*F{pc}"
+    ws[f"E{g}"], ws[f"F{g}"] = "GRAND TOTAL", f"=F{s}+F{ca}"
+    ws[f"E{pa}"], ws[f"F{pa}"] = "Accuracy range ± (editable)", acc
+    ws[f"E{lo}"], ws[f"F{lo}"] = "Low estimate", f"=F{g}*(1-F{pa})"
+    ws[f"E{hi}"], ws[f"F{hi}"] = "High estimate", f"=F{g}*(1+F{pa})"
+    for row in range(2, last + 1):
+        ws[f"C{row}"].number_format = '#,##0.0'
         ws[f"E{row}"].number_format = '#,##0.00'
         ws[f"F{row}"].number_format = '"$"#,##0.00'
-        ws[f"C{row}"].number_format = '#,##0.0'
+    for row in range(s, hi + 1):
+        ws[f"E{row}"].font = Font(bold=True)
+        ws[f"F{row}"].font = Font(bold=True)
+        ws[f"F{row}"].number_format = '0%' if row in (pc, pa) else '"$"#,##0.00'
     for col, w in zip("ABCDEF", (10, 70, 10, 8, 18, 18)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
