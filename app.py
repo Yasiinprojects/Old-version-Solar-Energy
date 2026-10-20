@@ -237,12 +237,8 @@ with tab3:
     st.subheader("🤖 AI Engineering Co-Pilot")
     st.caption("Ask questions about why specific line items were generated, what design assumptions mean, or what to verify with grid operators.")
 
-    # Recompute variables for scope inside tab if needed
-    edited_chat = st.session_state.get("boq_editor", df)
-    edited_chat["Total (USD)"] = edited_chat["Qty"] * edited_chat["Unit Rate (USD)"]
-    subtotal_chat = edited_chat["Total (USD)"].sum()
-    cont_amt_chat = subtotal_chat * contingency
-    grand_chat = subtotal_chat + cont_amt_chat
+    # Use the 'edited' dataframe directly from Tab 1
+    edited_chat = edited
 
     def get_secret(name):
         try:
@@ -261,8 +257,8 @@ with tab3:
         st.session_state.chat = []
 
     def build_context():
-        subtotal_str = f"USD {subtotal_chat:,.2f}"
-        grand_str = f"USD {grand_chat:,.2f}"
+        subtotal_str = f"USD {subtotal:,.2f}"
+        grand_str = f"USD {grand:,.2f}"
         return f"""You are an assistant inside a solar/BESS CapEx tool.
 Load: {kw:,.0f} kW | Voltage: {volt_label}
 Subtotal: {subtotal_str} | Grand Total: {grand_str}
