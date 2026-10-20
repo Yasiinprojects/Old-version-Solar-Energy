@@ -237,6 +237,7 @@ with tab3:
     st.subheader("🤖 AI Engineering Co-Pilot")
     st.caption("Ask questions about why specific line items were generated, what design assumptions mean, or what to verify with grid operators.")
 
+    # Use the 'edited' dataframe directly from Tab 1
     edited_chat = edited
 
     def get_secret(name):
@@ -258,11 +259,11 @@ with tab3:
     def build_context():
         subtotal_str = f"USD {subtotal:,.2f}"
         grand_str = f"USD {grand:,.2f}"
-        return f"""You are an assistant inside a solar/BESS CapEx tool.
+        # Lightweight context without raw CSV dump to prevent free-tier 503 capacity issues
+        return f"""You are an expert engineering assistant inside a solar/BESS CapEx tool.
 Load: {kw:,.0f} kW | Voltage: {volt_label}
 Subtotal: {subtotal_str} | Grand Total: {grand_str}
-BOQ Data:
-{edited_chat.to_csv(index=False)}"""
+Help the user understand their grid interconnection cost estimate, transformer sizing, cabling, and design assumptions."""
 
     for m in st.session_state.chat:
         with st.chat_message(m["role"]):
@@ -276,7 +277,7 @@ BOQ Data:
             try:
                 client = genai.Client(api_key=GEMINI_KEY)
                 
-                # Reduced history from [-9:] to [-4:] to prevent token overflow on free tier
+                # Sliced history to keep payload small
                 chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:]])
                 full_prompt = f"{build_context()}\n\nRecent Conversation:\n{chat_history}"
 
@@ -293,5 +294,8 @@ BOQ Data:
                 reply = st.write_stream(token_stream())
                 st.session_state.chat.append({"role": "assistant", "content": reply})
             except Exception as e:
-                st.error(f"The assistant is busy or hit a rate limit. Please wait 10 seconds and try again. Details: {type(e).__name__}")
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    st.warning("⚠️ Google's AI servers are experiencing temporary high traffic. Please wait 10 seconds and try sending again!")
+                else:
+                    st.error(f"The assistant is unavailable right now. Details: {type(e).__name__}")
                 st.session_state.chat.pop()
