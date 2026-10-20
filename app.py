@@ -93,15 +93,7 @@ aux_cost = 0.0 if is_lv else 3500.0
 earthing, testing = 4500.0, 9500.0
 prelims = max(6000.0, 0.06 * (supply + length * trench_rate + labour + protection + aux_cost + earthing + testing))
 
-# ============================== WARNINGS =====================================
-if is_lv and (runs > 2 or kw > 1000):
-    st.warning("Load is high for a 415 V connection. Check whether an MV connection is more realistic.")
-if need_a > RATINGS[-1]:
-    st.warning(f"Required switchgear current ({need_a:,.0f} A) exceeds the largest standard rating listed.")
-if n_tx > 1 and include_tx:
-    st.info(f"Load exceeds the largest single transformer: using {n_tx} × {tx_kva} kVA units.")
-
-# ============================== BOQ ==========================================
+# ============================== BOQ DATA =====================================
 sig = (V, kw, ground)
 if st.session_state.get("boq_sig") != sig:
     st.session_state.pop("boq_editor", None)
@@ -122,137 +114,187 @@ rows = [
 ]
 df = pd.DataFrame(rows, columns=["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"])
 
-st.subheader("⚙️ Editable Quantities & Unit Rates")
-st.caption("Edit Qty or Unit Rate. Edits reset when load, voltage or trenching condition changes; use the sidebar button to reset manually.")
-edited = st.data_editor(
-    df, key="boq_editor", hide_index=True, use_container_width=True,
-    disabled=["Ref", "Item Description", "Unit"],
-    column_config={
-        "Qty": st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
-        "Unit Rate (USD)": st.column_config.NumberColumn(min_value=0.0, format="$%.2f"),
-    },
-)
-edited["Total (USD)"] = edited["Qty"] * edited["Unit Rate (USD)"]
-subtotal = edited["Total (USD)"].sum()
-cont_amt = subtotal * contingency
-grand = subtotal + cont_amt
+assumptions = [
+    ("Peak AC load (kW)", kw), ("Grid voltage", volt_label), ("Power factor", pf),
+    ("Design current (A)", round(current, 1)), ("Cable derating factor", DERATE),
+    ("Switchgear sizing", "1.25 × design current, next standard rating"),
+    ("Assumed fault level (kA)", f"{fault_ka:g} (confirm with utility)"),
+    ("Trenching condition", ground),
+    ("Scope exclusions", "PV/BESS equipment, utility fees, studies, SCADA, land"),
+    ("Status", "Budget-stage estimate only; verify before use in tenders"),
+]
 
-st.markdown("---")
-# Row 1: Core System Specs & Grand Total
-c1, c2, c3 = st.columns(3)
-c1.metric("Transformer", f"{n_tx} × {tx_kva} kVA" if include_tx else "None (LV)")
-c2.metric("Design Load Current", f"{current:,.1f} A")
-c3.metric("Grand Total CapEx", f"${grand:,.0f}")
+# ============================== TAB CREATION =================================
+tab1, tab2, tab3 = st.tabs(["⚡ CapEx Calculator & BOQ", "📥 Export & Assumptions", "🤖 AI Co-Pilot"])
 
-# Row 2: Accuracy Range Breakdown (fixes the clipping bug)
-r1, r2 = st.columns(2)
-r1.metric(f"Low Estimate (-{accuracy:.0%})", f"${grand*(1-accuracy):,.0f}")
-r2.metric(f"High Estimate (+{accuracy:.0%})", f"${grand*(1+accuracy):,.0f}")
+with tab1:
+    # Warnings
+    if is_lv and (runs > 2 or kw > 1000):
+        st.warning("Load is high for a 415 V connection. Check whether an MV connection is more realistic.")
+    if need_a > RATINGS[-1]:
+        st.warning(f"Required switchgear current ({need_a:,.0f} A) exceeds the largest standard rating listed.")
+    if n_tx > 1 and include_tx:
+        st.info(f"Load exceeds the largest single transformer: using {n_tx} × {tx_kva} kVA units.")
 
-st.info(
-    f"Contingency: **${cont_amt:,.2f}** ({contingency:.0%}). "
-    f"CapEx intensity: **${grand / kw:,.2f} per kW**. Covers the grid-connection scope only "
-    "(excludes PV/BESS equipment, utility connection fees, studies and SCADA)."
-)
+    st.subheader("⚙️ Editable Quantities & Unit Rates")
+    st.caption("Edit Qty or Unit Rate. Edits reset when load, voltage or trenching condition changes; use the sidebar button to reset manually.")
+    
+    edited = st.data_editor(
+        df, key="boq_editor", hide_index=True, use_container_width=True,
+        disabled=["Ref", "Item Description", "Unit"],
+        column_config={
+            "Qty": st.column_config.NumberColumn(min_value=0.0, format="%.1f"),
+            "Unit Rate (USD)": st.column_config.NumberColumn(min_value=0.0, format="$%.2f"),
+        },
+    )
+    edited["Total (USD)"] = edited["Qty"] * edited["Unit Rate (USD)"]
+    subtotal = edited["Total (USD)"].sum()
+    cont_amt = subtotal * contingency
+    grand = subtotal + cont_amt
 
-# ============================== EXCEL EXPORT =================================
-def build_excel(df_boq, inputs, cont_pct, acc):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "CapEx Estimate"
-    head = ["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)", "Total (USD)"]
-    ws.append(head)
-    for c in ws[1]:
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="1F3864")
-        c.alignment = Alignment(horizontal="center")
-    for i, r in enumerate(df_boq.itertuples(index=False), start=2):
-        ws.append([r[0], r[1], r[2], r[3], r[4], f"=C{i}*E{i}"])
-    last = len(df_boq) + 1
-    s = last + 2
-    pc, ca, g, pa, lo, hi = s + 1, s + 2, s + 3, s + 4, s + 5, s + 6
-    ws[f"E{s}"], ws[f"F{s}"] = "Subtotal", f"=SUM(F2:F{last})"
-    ws[f"E{pc}"], ws[f"F{pc}"] = "Contingency %", cont_pct
-    ws[f"E{ca}"], ws[f"F{ca}"] = "Contingency amount", f"=F{s}*F{pc}"
-    ws[f"E{g}"], ws[f"F{g}"] = "GRAND TOTAL", f"=F{s}+F{ca}"
-    ws[f"E{pa}"], ws[f"F{pa}"] = "Accuracy range ±", acc
-    ws[f"E{lo}"], ws[f"F{lo}"] = "Low estimate", f"=F{g}*(1-F{pa})"
-    ws[f"E{hi}"], ws[f"F{hi}"] = "High estimate", f"=F{g}*(1+F{pa})"
-    for row in range(2, last + 1):
-        ws[f"C{row}"].number_format = '#,##0.0'
-        ws[f"E{row}"].number_format = '#,##0.00'
-        ws[f"F{row}"].number_format = '"$"#,##0.00'
-    for col, w in zip("ABCDEF", (10, 70, 10, 8, 18, 18)):
-        ws.column_dimensions[col].width = w
-    ws.freeze_panes = "A2"
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+    st.markdown("### Executive Dashboard")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Transformer", f"{n_tx} × {tx_kva} kVA" if include_tx else "None (LV)")
+    c2.metric("Design Load Current", f"{current:,.1f} A")
+    c3.metric("Grand Total CapEx", f"${grand:,.0f}")
 
-st.markdown("---")
-st.subheader("📥 Export")
-st.download_button(
-    "Download Excel (.xlsx)",
-    data=build_excel(edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], [], contingency, accuracy),
-    file_name=f"CapEx_Estimate_{int(kw)}kW.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    type="primary",
-)
+    r1, r2 = st.columns(2)
+    r1.metric(f"Low Estimate (-{accuracy:.0%})", f"${grand*(1-accuracy):,.0f}")
+    r2.metric(f"High Estimate (+{accuracy:.0%})", f"${grand*(1+accuracy):,.0f}")
 
-# ============================== AI ASSISTANT =================================
-def get_secret(name):
-    try:
-        return st.secrets[name]
-    except Exception:
-        return None
+    st.info(
+        f"Contingency: **${cont_amt:,.2f}** ({contingency:.0%}). "
+        f"CapEx intensity: **${grand / kw:,.2f} per kW**. Covers the grid-connection scope only "
+        "(excludes PV/BESS equipment, utility connection fees, studies and SCADA)."
+    )
 
-GEMINI_KEY = get_secret("GEMINI_API_KEY")
-GEMINI_MODEL = get_secret("GEMINI_MODEL")
-configured = bool(GEMINI_KEY and GEMINI_MODEL)
+with tab2:
+    st.subheader("📥 Excel Export")
+    st.caption("Download your finalized estimate as a fully formatted professional workbook with live formulas and an assumptions audit trail.")
 
-st.markdown("---")
-st.subheader("🤖 Ask the Estimator")
-if not configured:
-    st.info("Assistant not configured yet: add both `GEMINI_API_KEY` and `GEMINI_MODEL` to your Streamlit secrets.")
+    def build_excel(df_boq, inputs, cont_pct, acc):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "CapEx Estimate"
+        head = ["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)", "Total (USD)"]
+        ws.append(head)
+        for c in ws[1]:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="1F3864")
+            c.alignment = Alignment(horizontal="center")
+        for i, r in enumerate(df_boq.itertuples(index=False), start=2):
+            ws.append([r[0], r[1], r[2], r[3], r[4], f"=C{i}*E{i}"])
+        last = len(df_boq) + 1
+        s = last + 2
+        pc, ca, g, pa, lo, hi = s + 1, s + 2, s + 3, s + 4, s + 5, s + 6
+        ws[f"E{s}"], ws[f"F{s}"] = "Subtotal", f"=SUM(F2:F{last})"
+        ws[f"E{pc}"], ws[f"F{pc}"] = "Contingency %", cont_pct
+        ws[f"E{ca}"], ws[f"F{ca}"] = "Contingency amount", f"=F{s}*F{pc}"
+        ws[f"E{g}"], ws[f"F{g}"] = "GRAND TOTAL", f"=F{s}+F{ca}"
+        ws[f"E{pa}"], ws[f"F{pa}"] = "Accuracy range ±", acc
+        ws[f"E{lo}"], ws[f"F{lo}"] = "Low estimate", f"=F{g}*(1-F{pa})"
+        ws[f"E{hi}"], ws[f"F{hi}"] = "High estimate", f"=F{g}*(1+F{pa})"
+        for row in range(2, last + 1):
+            ws[f"C{row}"].number_format = '#,##0.0'
+            ws[f"E{row}"].number_format = '#,##0.00'
+            ws[f"F{row}"].number_format = '"$"#,##0.00'
+        for col, w in zip("ABCDEF", (10, 70, 10, 8, 18, 18)):
+            ws.column_dimensions[col].width = w
+        ws.freeze_panes = "A2"
 
-if "chat" not in st.session_state:
-    st.session_state.chat = []
+        wa = wb.create_sheet("Assumptions")
+        wa.append(["Input / Assumption", "Value"])
+        for k, v in inputs:
+            wa.append([k, v])
+        wa.column_dimensions["A"].width = 38
+        wa.column_dimensions["B"].width = 70
+        for c in wa[1]:
+            c.font = Font(bold=True)
 
-def build_context():
-    subtotal_str = f"USD {subtotal:,.2f}"
-    grand_str = f"USD {grand:,.2f}"
-    return f"""You are an assistant inside a solar/BESS CapEx tool.
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # Calculate edited dataframe for export tab
+    edited_export = st.data_editor(
+        df, key="boq_editor_export_view", hide_index=True, use_container_width=True, disabled=True
+    )
+
+    st.download_button(
+        "Download Professional Excel (.xlsx)",
+        data=build_excel(edited_export[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], assumptions, contingency, accuracy),
+        file_name=f"CapEx_Estimate_{int(kw)}kW.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+    )
+
+    st.markdown("---")
+    st.subheader("📋 Registered Assumptions Audit Trail")
+    assumptions_df = pd.DataFrame(assumptions, columns=["Parameter / Rule", "Current Value"])
+    st.dataframe(assumptions_df, hide_index=True, use_container_width=True)
+
+with tab3:
+    st.subheader("🤖 AI Engineering Co-Pilot")
+    st.caption("Ask questions about why specific line items were generated, what design assumptions mean, or what to verify with grid operators.")
+
+    # Recompute variables for scope inside tab if needed
+    edited_chat = st.session_state.get("boq_editor", df)
+    edited_chat["Total (USD)"] = edited_chat["Qty"] * edited_chat["Unit Rate (USD)"]
+    subtotal_chat = edited_chat["Total (USD)"].sum()
+    cont_amt_chat = subtotal_chat * contingency
+    grand_chat = subtotal_chat + cont_amt_chat
+
+    def get_secret(name):
+        try:
+            return st.secrets[name]
+        except Exception:
+            return None
+
+    GEMINI_KEY = get_secret("GEMINI_API_KEY")
+    GEMINI_MODEL = get_secret("GEMINI_MODEL")
+    configured = bool(GEMINI_KEY and GEMINI_MODEL)
+
+    if not configured:
+        st.info("Assistant not configured yet: add both `GEMINI_API_KEY` and `GEMINI_MODEL` to your Streamlit secrets.")
+
+    if "chat" not in st.session_state:
+        st.session_state.chat = []
+
+    def build_context():
+        subtotal_str = f"USD {subtotal_chat:,.2f}"
+        grand_str = f"USD {grand_chat:,.2f}"
+        return f"""You are an assistant inside a solar/BESS CapEx tool.
 Load: {kw:,.0f} kW | Voltage: {volt_label}
 Subtotal: {subtotal_str} | Grand Total: {grand_str}
 BOQ Data:
-{edited.to_csv(index=False)}"""
+{edited_chat.to_csv(index=False)}"""
 
-for m in st.session_state.chat:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
+    for m in st.session_state.chat:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
 
-if prompt := st.chat_input("Ask about this estimate…", disabled=not configured):
-    st.session_state.chat.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    with st.chat_message("assistant"):
-        try:
-            client = genai.Client(api_key=GEMINI_KEY)
-            chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-9:]])
-            full_prompt = f"{build_context()}\n\nRecent Conversation:\n{chat_history}"
+    if prompt := st.chat_input("Ask about this estimate…", disabled=not configured):
+        st.session_state.chat.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            try:
+                client = genai.Client(api_key=GEMINI_KEY)
+                chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-9:]])
+                full_prompt = f"{build_context()}\n\nRecent Conversation:\n{chat_history}"
 
-            response_stream = client.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=full_prompt,
-            )
+                response_stream = client.models.generate_content_stream(
+                    model=GEMINI_MODEL,
+                    contents=full_prompt,
+                )
 
-            def token_stream():
-                for chunk in response_stream:
-                    if chunk.text:
-                        yield chunk.text
+                def token_stream():
+                    for chunk in response_stream:
+                        if chunk.text:
+                            yield chunk.text
 
-            reply = st.write_stream(token_stream())
-            st.session_state.chat.append({"role": "assistant", "content": reply})
-        except Exception as e:
-            st.error(f"The assistant is unavailable right now. Details: {type(e).__name__}: {str(e)[:400]}")
-            st.session_state.chat.pop()
+                reply = st.write_stream(token_stream())
+                st.session_state.chat.append({"role": "assistant", "content": reply})
+            except Exception as e:
+                st.error(f"The assistant is unavailable right now. Details: {type(e).__name__}: {str(e)[:400]}")
+                st.session_state.chat.pop()
