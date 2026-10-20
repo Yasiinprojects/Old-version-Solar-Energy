@@ -3,10 +3,10 @@ import math
 
 import pandas as pd
 import streamlit as st
+from google import genai
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from openai import OpenAI
 
 st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layout="wide")
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
@@ -233,16 +233,16 @@ def get_secret(name):
         return None
 
 
-OPENAI_KEY = get_secret("OPENAI_API_KEY")
-OPENAI_MODEL = get_secret("OPENAI_MODEL")  # set in app secrets; see OpenAI's model list
+GEMINI_KEY = get_secret("GEMINI_API_KEY")
+GEMINI_MODEL = get_secret("GEMINI_MODEL") or "gemini-2.5-flash"
 MAX_QUESTIONS = 15                         # per browser session
-configured = bool(OPENAI_KEY and OPENAI_MODEL)
+configured = bool(GEMINI_KEY)
 
 st.markdown("---")
 st.subheader("🤖 Ask the Estimator")
 st.caption("Ask why a line item is there, what an assumption means, or what to check before using this number.")
 if not configured:
-    st.info("Assistant not configured yet: add OPENAI_API_KEY and OPENAI_MODEL to the app secrets.")
+    st.info("Assistant not configured yet: add GEMINI_API_KEY to the app secrets.")
 
 if "chat" not in st.session_state:
     st.session_state.chat = []
@@ -287,21 +287,24 @@ if prompt := st.chat_input("Ask about this estimate…", disabled=not configured
             st.markdown(prompt)
         with st.chat_message("assistant"):
             try:
-                client = OpenAI(api_key=OPENAI_KEY)
-                stream = client.responses.create(
-                    model=OPENAI_MODEL,
-                    instructions=build_context(),
-                    input=st.session_state.chat[-9:],
-                    stream=True,
+                client = genai.Client(api_key=GEMINI_KEY)
+                
+                # Format recent chat history into text prompt
+                chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-9:]])
+                full_prompt = f"{build_context()}\n\nRecent Conversation:\n{chat_history}"
+
+                response_stream = client.models.generate_content_stream(
+                    model=GEMINI_MODEL,
+                    contents=full_prompt,
                 )
 
                 def token_stream():
-                    for event in stream:
-                        if event.type == "response.output_text.delta":
-                            yield event.delta
+                    for chunk in response_stream:
+                        if chunk.text:
+                            yield chunk.text
 
                 reply = st.write_stream(token_stream())
                 st.session_state.chat.append({"role": "assistant", "content": reply})
-            except Exception:
-                st.error("The assistant is unavailable right now. Please try again.")
+            except Exception as e:
+                st.error(f"The assistant is unavailable right now. Details: {type(e).__name__}: {str(e)[:400]}")
                 st.session_state.chat.pop()  # drop the unanswered question
