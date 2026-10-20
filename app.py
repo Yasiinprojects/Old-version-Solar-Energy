@@ -138,11 +138,22 @@ cont_amt = subtotal * contingency
 grand = subtotal + cont_amt
 
 st.markdown("---")
-c1, c2, c3, c4 = st.columns(4)
+# Row 1: Core System Specs & Grand Total
+c1, c2, c3 = st.columns(3)
 c1.metric("Transformer", f"{n_tx} × {tx_kva} kVA" if include_tx else "None (LV)")
 c2.metric("Design Load Current", f"{current:,.1f} A")
 c3.metric("Grand Total CapEx", f"${grand:,.0f}")
-c4.metric(f"Range (±{accuracy:.0%})", f"${grand*(1-accuracy):,.0f} –${grand*(1+accuracy):,.0f}")
+
+# Row 2: Accuracy Range Breakdown (fixes the clipping bug)
+r1, r2 = st.columns(2)
+r1.metric(f"Low Estimate (-{accuracy:.0%})", f"${grand*(1-accuracy):,.0f}")
+r2.metric(f"High Estimate (+{accuracy:.0%})", f"${grand*(1+accuracy):,.0f}")
+
+st.info(
+    f"Contingency: **${cont_amt:,.2f}** ({contingency:.0%}). "
+    f"CapEx intensity: **${grand / kw:,.2f} per kW**. Covers the grid-connection scope only "
+    "(excludes PV/BESS equipment, utility connection fees, studies and SCADA)."
+)
 
 # ============================== EXCEL EXPORT =================================
 def build_excel(df_boq, inputs, cont_pct, acc):
