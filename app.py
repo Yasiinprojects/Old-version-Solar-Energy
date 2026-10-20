@@ -237,7 +237,6 @@ with tab3:
     st.subheader("🤖 AI Engineering Co-Pilot")
     st.caption("Ask questions about why specific line items were generated, what design assumptions mean, or what to verify with grid operators.")
 
-    # Use the 'edited' dataframe directly from Tab 1
     edited_chat = edited
 
     def get_secret(name):
@@ -276,7 +275,9 @@ BOQ Data:
         with st.chat_message("assistant"):
             try:
                 client = genai.Client(api_key=GEMINI_KEY)
-                chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-9:]])
+                
+                # Reduced history from [-9:] to [-4:] to prevent token overflow on free tier
+                chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:]])
                 full_prompt = f"{build_context()}\n\nRecent Conversation:\n{chat_history}"
 
                 response_stream = client.models.generate_content_stream(
@@ -292,5 +293,5 @@ BOQ Data:
                 reply = st.write_stream(token_stream())
                 st.session_state.chat.append({"role": "assistant", "content": reply})
             except Exception as e:
-                st.error(f"The assistant is unavailable right now. Details: {type(e).__name__}: {str(e)[:400]}")
+                st.error(f"The assistant is busy or hit a rate limit. Please wait 10 seconds and try again. Details: {type(e).__name__}")
                 st.session_state.chat.pop()
