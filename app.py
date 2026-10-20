@@ -6,6 +6,7 @@ import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openai import OpenAI
 
 st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layout="wide")
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
@@ -222,3 +223,85 @@ st.download_button(
     type="primary",
 )
 st.caption("Workbook uses live formulas for totals and includes an Assumptions sheet.")
+
+
+# ============================== AI ASSISTANT =================================
+def get_secret(name):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return None
+
+
+OPENAI_KEY = get_secret("OPENAI_API_KEY")
+OPENAI_MODEL = get_secret("OPENAI_MODEL")  # set in app secrets; see OpenAI's model list
+MAX_QUESTIONS = 15                         # per browser session
+configured = bool(OPENAI_KEY and OPENAI_MODEL)
+
+st.markdown("---")
+st.subheader("🤖 Ask the Estimator")
+st.caption("Ask why a line item is there, what an assumption means, or what to check before using this number.")
+if not configured:
+    st.info("Assistant not configured yet: add OPENAI_API_KEY and OPENAI_MODEL to the app secrets.")
+
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+
+
+def build_context():
+    return f"""You are an assistant inside a budget-stage solar/BESS grid-interconnection
+CapEx tool used by engineering and construction estimators.
+
+Rules:
+- Explain the estimate shown below. Use ONLY the figures given here; never invent prices or quantities.
+- If asked for something the tool does not cover, say so and suggest what to verify with a
+  qualified electrical engineer or the utility.
+- Be concise and practical. All rates are indicative defaults, not quotes.
+
+CURRENT INPUTS
+Load: {kw:,.0f} kW | Voltage: {volt_label} | Power factor: {pf}
+Cable distance: {length:,.0f} m | Trenching: {ground}
+Contingency: {contingency:.0%} | Accuracy range: ±{accuracy:.0%}
+
+CALCULATED
+Design current: {current:,.1f} A | Transformer: {n_tx} x {tx_kva} kVA (included: {include_tx})
+Cable: {cable_desc} | Switchgear: {rating} A, {fault_ka:g} kA assumed fault level
+
+BOQ (CSV, includes user edits)
+{edited.to_csv(index=False)}
+Subtotal: ${subtotal:,.2f} | Grand total: ${grand:,.2f}
+Scope excludes PV/BESS equipment, utility fees, studies and SCADA."""
+
+
+for m in st.session_state.chat:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+if prompt := st.chat_input("Ask about this estimate…", disabled=not configured):
+    asked = sum(1 for m in st.session_state.chat if m["role"] == "user")
+    if asked >= MAX_QUESTIONS:
+        st.warning("Question limit reached for this session.")
+    else:
+        st.session_state.chat.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            try:
+                client = OpenAI(api_key=OPENAI_KEY)
+                stream = client.responses.create(
+                    model=OPENAI_MODEL,
+                    instructions=build_context(),
+                    input=st.session_state.chat[-9:],
+                    stream=True,
+                )
+
+                def token_stream():
+                    for event in stream:
+                        if event.type == "response.output_text.delta":
+                            yield event.delta
+
+                reply = st.write_stream(token_stream())
+                st.session_state.chat.append({"role": "assistant", "content": reply})
+            except Exception:
+                st.error("The assistant is unavailable right now. Please try again.")
+                st.session_state.chat.pop()  # drop the unanswered question
