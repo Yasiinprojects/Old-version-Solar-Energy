@@ -148,7 +148,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Transformer", f"{n_tx} × {tx_kva} kVA" if include_tx else "None (LV)")
 c2.metric("Design Load Current", f"{current:,.1f} A")
 c3.metric("Grand Total CapEx", f"${grand:,.0f}")
-c4.metric(f"Range (±{accuracy:.0%})", f"${grand*(1-accuracy):,.0f} – ${grand*(1+accuracy):,.0f}")
+c4.metric(f"Range (±{accuracy:.0%})", f"${grand*(1-accuracy):,.0f} –${grand*(1+accuracy):,.0f}")
 st.info(
     f"Contingency: **${cont_amt:,.2f}** ({contingency:.0%}). "
     f"CapEx intensity: **${grand / kw:,.2f} per kW**. Covers the grid-connection scope only "
@@ -234,15 +234,15 @@ def get_secret(name):
 
 
 GEMINI_KEY = get_secret("GEMINI_API_KEY")
-GEMINI_MODEL = get_secret("GEMINI_MODEL") or "gemini-2.5-flash"
+GEMINI_MODEL = get_secret("GEMINI_MODEL")
 MAX_QUESTIONS = 15                         # per browser session
-configured = bool(GEMINI_KEY)
+configured = bool(GEMINI_KEY and GEMINI_MODEL)
 
 st.markdown("---")
 st.subheader("🤖 Ask the Estimator")
 st.caption("Ask why a line item is there, what an assumption means, or what to check before using this number.")
 if not configured:
-    st.info("Assistant not configured yet: add GEMINI_API_KEY to the app secrets.")
+    st.info("Assistant not configured yet: add both `GEMINI_API_KEY` and `GEMINI_MODEL` to your Streamlit secrets.")
 
 if "chat" not in st.session_state:
     st.session_state.chat = []
@@ -269,7 +269,7 @@ Cable: {cable_desc} | Switchgear: {rating} A, {fault_ka:g} kA assumed fault leve
 
 BOQ (CSV, includes user edits)
 {edited.to_csv(index=False)}
-Subtotal: ${subtotal:,.2f} | Grand total: ${grand:,.2f}
+Subtotal: ${subtotal:,.2f} \vert{} Grand total:${grand:,.2f}
 Scope excludes PV/BESS equipment, utility fees, studies and SCADA."""
 
 
