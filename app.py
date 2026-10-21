@@ -6,7 +6,6 @@ import streamlit as st
 from google import genai
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layout="wide")
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
@@ -128,7 +127,6 @@ assumptions = [
 tab1, tab2, tab3 = st.tabs(["⚡ CapEx Calculator & BOQ", "📥 Export & Assumptions", "🤖 AI Co-Pilot"])
 
 with tab1:
-    # Warnings
     if is_lv and (runs > 2 or kw > 1000):
         st.warning("Load is high for a 415 V connection. Check whether an MV connection is more realistic.")
     if need_a > RATINGS[-1]:
@@ -215,14 +213,9 @@ with tab2:
         wb.save(buf)
         return buf.getvalue()
 
-    # Calculate edited dataframe for export tab
-    edited_export = st.data_editor(
-        df, key="boq_editor_export_view", hide_index=True, use_container_width=True, disabled=True
-    )
-
     st.download_button(
         "Download Professional Excel (.xlsx)",
-        data=build_excel(edited_export[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], assumptions, contingency, accuracy),
+        data=build_excel(edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], assumptions, contingency, accuracy),
         file_name=f"CapEx_Estimate_{int(kw)}kW.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
@@ -236,9 +229,6 @@ with tab2:
 with tab3:
     st.subheader("🤖 AI Engineering Co-Pilot")
     st.caption("Ask questions about why specific line items were generated, what design assumptions mean, or what to verify with grid operators.")
-
-    # Use the 'edited' dataframe directly from Tab 1
-    edited_chat = edited
 
     def get_secret(name):
         try:
@@ -259,7 +249,6 @@ with tab3:
     def build_context():
         subtotal_str = f"USD {subtotal:,.2f}"
         grand_str = f"USD {grand:,.2f}"
-        # Lightweight context without raw CSV dump to prevent free-tier 503 capacity issues
         return f"""You are an expert engineering assistant inside a solar/BESS CapEx tool.
 Load: {kw:,.0f} kW | Voltage: {volt_label}
 Subtotal: {subtotal_str} | Grand Total: {grand_str}
@@ -276,8 +265,6 @@ Help the user understand their grid interconnection cost estimate, transformer s
         with st.chat_message("assistant"):
             try:
                 client = genai.Client(api_key=GEMINI_KEY)
-                
-                # Sliced history to keep payload small
                 chat_history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:]])
                 full_prompt = f"{build_context()}\n\nRecent Conversation:\n{chat_history}"
 
